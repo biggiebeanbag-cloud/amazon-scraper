@@ -13,7 +13,10 @@ USER_AGENTS = [
 def get_amazon(asin: str):
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"]
+        )
 
         context = browser.new_context(
             user_agent=random.choice(USER_AGENTS),
@@ -23,18 +26,45 @@ def get_amazon(asin: str):
         page = context.new_page()
         page.goto(f"https://www.amazon.in/dp/{asin}", timeout=60000)
 
+        # 🔥 WAIT FOR PAGE TO LOAD PROPERLY
+        try:
+            page.wait_for_selector("#acrPopover", timeout=8000)
+        except:
+            pass
+
         page.wait_for_timeout(2000)
 
-        try:
-            rating = page.locator("#acrPopover").get_attribute("title")
-            reviews = page.locator("#acrCustomerReviewText").inner_text()
+        rating = 0
+        reviews = 0
 
-            rating = float(rating.split()[0])
-            reviews = int(reviews.split()[0].replace(",", ""))
+        try:
+            # PRIMARY METHOD
+            rating_text = page.locator("#acrPopover").get_attribute("title")
+            review_text = page.locator("#acrCustomerReviewText").inner_text()
+
+            if rating_text:
+                rating = float(rating_text.split()[0])
+
+            if review_text:
+                reviews = int(review_text.split()[0].replace(",", ""))
 
         except:
-            rating = 0
-            reviews = 0
+            pass
+
+        # 🔥 FALLBACK METHOD (VERY IMPORTANT)
+        if rating == 0:
+            try:
+                rating_alt = page.locator("span.a-icon-alt").first.inner_text()
+                rating = float(rating_alt.split()[0])
+            except:
+                pass
+
+        if reviews == 0:
+            try:
+                review_alt = page.locator("#acrCustomerReviewText").inner_text()
+                reviews = int(review_alt.split()[0].replace(",", ""))
+            except:
+                pass
 
         browser.close()
 
