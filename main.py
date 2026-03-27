@@ -10,36 +10,31 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrom
 JS_EXTRACTOR = """
 () => {
 
-let rating = "0";
-let reviews = "0";
+let rating = 0;
+let reviews = 0;
 
-// PRIMARY (best)
-const r = document.querySelector("#acrPopover");
-if (r) {
-  const t = r.getAttribute("title") || "";
-  const m = t.match(/[\\d.]+/);
-  if (m) rating = m[0];
+// ✅ STRICT: ONLY MAIN PRODUCT RATING
+const ratingNode = document.querySelector("#acrPopover");
+
+if (ratingNode) {
+  const text = ratingNode.getAttribute("title") || "";
+  const match = text.match(/[\\d.]+/);
+  if (match) rating = parseFloat(match[0]);
 }
 
-// FALLBACK
-if (rating === "0") {
-  const alt = document.querySelector("span.a-icon-alt");
-  if (alt) {
-    const m = alt.innerText.match(/[\\d.]+/);
-    if (m) rating = m[0];
-  }
-}
+// ❌ DO NOT FALLBACK TO span.a-icon-alt (REMOVED)
 
-// REVIEWS
-const rev = document.querySelector("#acrCustomerReviewText");
-if (rev) {
-  const m = rev.innerText.replace(/,/g,"").match(/\\d+/);
-  if (m) reviews = m[0];
+// REVIEWS (safe)
+const reviewNode = document.querySelector("#acrCustomerReviewText");
+
+if (reviewNode) {
+  const match = reviewNode.innerText.replace(/,/g,"").match(/\\d+/);
+  if (match) reviews = parseInt(match[0]);
 }
 
 return {
-  rating: rating,
-  reviews: reviews
+  rating,
+  reviews
 };
 }
 """
