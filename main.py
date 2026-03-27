@@ -1,114 +1,118 @@
 from fastapi import FastAPI
-from playwright.sync_api import sync_playwright, TimeoutError
+import requests
 import random
+import time
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36"
+USER_AGENTS = [
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/119 Safari/537.36",
+"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/118 Safari/537.36",
+]
 
-# 🔥 YOUR CORE EXTRACTION (SIMPLIFIED + STRONG)
-JS_EXTRACTOR = """
-() => {
+def is_blocked(html):
+text = html.lower()
+return (
+"captcha" in text or
+"robot check" in text or
+len(html) < 5000
+)
 
-let rating = 0;
-let reviews = 0;
-
-// ✅ STRICT: ONLY MAIN PRODUCT RATING
-const ratingNode = document.querySelector("#acrPopover");
-
-if (ratingNode) {
-  const text = ratingNode.getAttribute("title") || "";
-  const match = text.match(/[\\d.]+/);
-  if (match) rating = parseFloat(match[0]);
-}
-
-// ❌ DO NOT FALLBACK TO span.a-icon-alt (REMOVED)
-
-// REVIEWS (safe)
-const reviewNode = document.querySelector("#acrCustomerReviewText");
-
-if (reviewNode) {
-  const match = reviewNode.innerText.replace(/,/g,"").match(/\\d+/);
-  if (match) reviews = parseInt(match[0]);
-}
-
-return {
-  rating,
-  reviews
-};
-}
-"""
+def extract_data(html, asin):
+soup = BeautifulSoup(html, "html.parser")
 
 
-def scrape_one(context, asin):
-    page = context.new_page()
+rating = 0
+reviews = 0
 
-    try:
-        url = f"https://www.amazon.in/dp/{asin}?th=1&psc=1"
-
-        page.goto(url, timeout=15000)
-
-        # 🔥 SMART WAIT (not heavy)
+# STRICT SELECTORS
+rating_tag = soup.select_one("#acrPopover")
+if rating_tag:
+    title = rating_tag.get("title", "")
+    if "out of" in title:
         try:
-            page.wait_for_selector("#acrPopover", timeout=5000)
+            rating = float(title.split(" ")[0])
         except:
             pass
 
-        page.wait_for_timeout(1000)
+review_tag = soup.select_one("#acrCustomerReviewText")
+if review_tag:
+    text = review_tag.text.strip()
+    num = ''.join(filter(str.isdigit, text))
+    if num:
+        reviews = int(num)
 
-        data = page.evaluate(JS_EXTRACTOR)
+return rating, reviews
 
-        rating = float(data.get("rating", 0))
-        reviews = int(data.get("reviews", 0))
 
-        page.close()
+def fetch_amazon(asin):
 
-        return {
-            "asin": asin,
-            "rating": rating,
-            "reviews": reviews
-        }
 
-    except TimeoutError:
-        page.close()
-        return {"asin": asin, "rating": 0, "reviews": 0}
+url = f"https://www.amazon.in/dp/{asin}"
 
-    except Exception as e:
-        page.close()
-        return {"asin": asin, "rating": 0, "reviews": 0}
+for attempt in range(5):  # 🔥 5 attempts (strong)
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Referer": "https://www.amazon.in/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        html = response.text
+
+        # 🚨 BLOCK DETECTION
+        if is_blocked(html):
+            time.sleep(random.uniform(2, 4))
+            continue
+
+        # 🔍 EXTRACT
+        rating, reviews = extract_data(html, asin)
+
+        # ✅ SUCCESS
+        if rating > 0:
+            return {
+                "asin": asin,
+                "rating": rating,
+                "reviews": reviews
+            }
+
+    except:
+        pass
+
+    # ⏳ RANDOM DELAY
+    time.sleep(random.uniform(1.5, 3.5))
+
+# ❌ FINAL FAIL
+return {
+    "asin": asin,
+    "rating": 0,
+    "reviews": 0
+}
 
 
 @app.get("/batch_amazon")
 def batch_amazon(asins: str):
 
-    asin_list = asins.split(",")
 
-    # 🚨 SAFE LIMIT (Railway)
-    asin_list = asin_list[:5]
+asin_list = asins.split(",")
+results = []
 
-    results = []
+for asin in asin_list:
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
+    data = fetch_amazon(asin)
 
-        context = browser.new_context(
-            user_agent=USER_AGENT,
-            locale="en-IN"
-        )
+    # 🔁 SECOND LEVEL RETRY (VERY IMPORTANT)
+    if data["rating"] == 0:
+        time.sleep(2)
+        data = fetch_amazon(asin)
 
-        for asin in asin_list:
+    results.append(data)
 
-            data = scrape_one(context, asin)
+return results
 
-            # 🔁 RETRY ON FAILURE
-            if data["rating"] == 0:
-                data = scrape_one(context, asin)
-
-            results.append(data)
-
-        browser.close()
-
-    return results
