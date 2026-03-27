@@ -9,8 +9,46 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/119 Safari/537.36"
 ]
 
-@app.get("/get_amazon")
-def get_amazon(asin: str):
+def scrape_one(page, asin):
+    try:
+        page.goto(f"https://www.amazon.in/dp/{asin}", timeout=60000)
+        page.wait_for_timeout(1500)
+
+        rating = 0
+        reviews = 0
+
+        try:
+            rating = float(page.locator("span.a-icon-alt").first.inner_text().split()[0])
+        except:
+            pass
+
+        try:
+            reviews = int(
+                page.locator("#acrCustomerReviewText").inner_text().split()[0].replace(",", "")
+            )
+        except:
+            pass
+
+        return {
+            "asin": asin,
+            "rating": rating,
+            "reviews": reviews
+        }
+
+    except:
+        return {
+            "asin": asin,
+            "rating": 0,
+            "reviews": 0
+        }
+
+
+@app.get("/batch_amazon")
+def batch_amazon(asins: str):
+
+    asin_list = asins.split(",")
+
+    results = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -19,57 +57,20 @@ def get_amazon(asin: str):
         )
 
         context = browser.new_context(
-            user_agent=random.choice(USER_AGENTS),
-            viewport={"width": 1280, "height": 800}
+            user_agent=random.choice(USER_AGENTS)
         )
 
         page = context.new_page()
-        page.goto(f"https://www.amazon.in/dp/{asin}", timeout=60000)
 
-        # 🔥 WAIT FOR PAGE TO LOAD PROPERLY
-        try:
-            page.wait_for_selector("#acrPopover", timeout=8000)
-        except:
-            pass
+        for asin in asin_list:
+            data = scrape_one(page, asin)
 
-        page.wait_for_timeout(2000)
+            # 🔁 RETRY IF FAILED
+            if data["rating"] == 0:
+                data = scrape_one(page, asin)
 
-        rating = 0
-        reviews = 0
-
-        try:
-            # PRIMARY METHOD
-            rating_text = page.locator("#acrPopover").get_attribute("title")
-            review_text = page.locator("#acrCustomerReviewText").inner_text()
-
-            if rating_text:
-                rating = float(rating_text.split()[0])
-
-            if review_text:
-                reviews = int(review_text.split()[0].replace(",", ""))
-
-        except:
-            pass
-
-        # 🔥 FALLBACK METHOD (VERY IMPORTANT)
-        if rating == 0:
-            try:
-                rating_alt = page.locator("span.a-icon-alt").first.inner_text()
-                rating = float(rating_alt.split()[0])
-            except:
-                pass
-
-        if reviews == 0:
-            try:
-                review_alt = page.locator("#acrCustomerReviewText").inner_text()
-                reviews = int(review_alt.split()[0].replace(",", ""))
-            except:
-                pass
+            results.append(data)
 
         browser.close()
 
-        return {
-            "asin": asin,
-            "rating": rating,
-            "reviews": reviews
-        }
+    return results
