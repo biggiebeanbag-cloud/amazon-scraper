@@ -72,12 +72,19 @@ url = f"https://www.amazon.in/dp/{asin}"
 for attempt in range(5):  # 🔥 5 attempts (strong)
 
     headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-IN,en;q=0.9",
-        "Referer": "https://www.amazon.in/",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    }
+    "User-Agent": random.choice(USER_AGENTS),
+    "Accept-Language": random.choice([
+        "en-IN,en;q=0.9",
+        "en-US,en;q=0.9",
+        "en-GB,en;q=0.9"
+    ]),
+    "Referer": random.choice([
+        "https://www.amazon.in/",
+        "https://www.google.com/",
+        "https://www.bing.com/"
+    ]),
+    "Connection": "keep-alive"
+}
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
