@@ -24,7 +24,7 @@ def is_blocked(html):
         "captcha" in text or
         "robot check" in text or
         "enter the characters you see below" in text or
-        len(html) < 3000  # slightly relaxed
+        len(html) < 3000
     )
 
 # 🔥 STRICT EXTRACTION
