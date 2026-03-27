@@ -30,12 +30,12 @@ USER_AGENTS = [
 ]
 
 def is_blocked(html):
-text = html.lower()
-return (
-"captcha" in text or
-"robot check" in text or
-len(html) < 5000
-)
+    text = html.lower()
+    return (
+        "captcha" in text or
+        "robot check" in text or
+        len(html) < 5000
+    )
 
 def extract_data(html, asin):
 soup = BeautifulSoup(html, "html.parser")
