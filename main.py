@@ -6,6 +6,12 @@ from bs4 import BeautifulSoup
 
 app = FastAPI()
 
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+    
 # 🔥 FULL USER AGENTS
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
