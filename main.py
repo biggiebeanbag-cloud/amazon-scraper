@@ -1,222 +1,253 @@
 from fastapi import FastAPI
-import requests
+import asyncio
 import random
-import time
-from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 app = FastAPI()
 
-# ---------------------------------------------------
-# Health Endpoint
-# ---------------------------------------------------
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
+MAX_WORKERS = 4
+MAX_RETRIES = 2
+NAV_TIMEOUT = 30000
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+]
+
+HEADERS = {
+    "Accept-Language": "en-IN,en;q=0.9",
+    "DNT": "1"
+}
+
+# --------------------------------------------------
+# HEALTH
+# --------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ---------------------------------------------------
-# User Agents
-# ---------------------------------------------------
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/120 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15",
-    "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 Version/15.0 Mobile Safari/604.1"
-]
+# --------------------------------------------------
+# JS EXTRACTOR
+# --------------------------------------------------
+AMAZON_JS_EXTRACTOR = r"""
+() => {
 
-ACCEPT_LANGUAGES = [
-    "en-IN,en;q=0.9",
-    "en-US,en;q=0.9",
-    "en-GB,en;q=0.9"
-]
+    let rating = null;
+    let reviews = 0;
 
-REFERERS = [
-    "https://www.amazon.in/",
-    "https://www.google.com/",
-    "https://www.bing.com/"
-]
+    // --------------------------------------------------
+    // RATING
+    // --------------------------------------------------
 
-# ---------------------------------------------------
-# Shared Session
-# ---------------------------------------------------
-session = requests.Session()
+    const ratingSelectors = [
+        '#acrPopover',
+        'span[data-hook="rating-out-of-text"]',
+        'i[data-hook="average-star-rating"] span',
+        'span.a-icon-alt'
+    ];
 
-# ---------------------------------------------------
-# Block Detection
-# ---------------------------------------------------
-def is_blocked(html):
-    text = html.lower()
+    for (const selector of ratingSelectors) {
+        const nodes = document.querySelectorAll(selector);
 
-    return (
-        "captcha" in text or
-        "robot check" in text or
-        "enter the characters you see below" in text or
-        "sorry, we just need to make sure you're not a robot" in text or
-        len(html) < 3000
-    )
+        for (const node of nodes) {
+            let text = '';
 
-# ---------------------------------------------------
-# Extract Rating + Reviews Strictly
-# ---------------------------------------------------
-def extract_data(html):
-    soup = BeautifulSoup(html, "html.parser")
+            if (node.getAttribute('title')) {
+                text = node.getAttribute('title').trim();
+            } else {
+                text = node.innerText.trim();
+            }
 
-    rating = None
-    reviews = 0
+            const match = text.match(/([0-5](?:\.[0-9])?)\s*out\s*of\s*5/i);
 
-    # ---------------------------------------------------
-    # Main Rating Selector
-    # ---------------------------------------------------
-    rating_tag = soup.select_one("#acrPopover")
-
-    if rating_tag:
-        title = rating_tag.get("title", "").strip()
-
-        if "out of" in title.lower():
-            try:
-                value = float(title.split(" ")[0].replace(",", "."))
-                if 0 < value <= 5:
-                    rating = value
-            except:
-                pass
-
-    # ---------------------------------------------------
-    # Fallback Rating Selector
-    # ---------------------------------------------------
-    if rating is None:
-        rating_tag = soup.select_one("span[data-hook='rating-out-of-text']")
-
-        if rating_tag:
-            text = rating_tag.get_text(strip=True)
-
-            if "out of" in text.lower():
-                try:
-                    value = float(text.split(" ")[0].replace(",", "."))
-                    if 0 < value <= 5:
-                        rating = value
-                except:
-                    pass
-
-    # ---------------------------------------------------
-    # Main Review Selector
-    # ---------------------------------------------------
-    review_tag = soup.select_one("#acrCustomerReviewText")
-
-    if review_tag:
-        text = review_tag.get_text(strip=True)
-        digits = ''.join(filter(str.isdigit, text))
-
-        if digits:
-            reviews = int(digits)
-
-    # ---------------------------------------------------
-    # Fallback Review Selector
-    # ---------------------------------------------------
-    if reviews == 0:
-        review_tag = soup.select_one("span[data-hook='total-review-count']")
-
-        if review_tag:
-            digits = ''.join(filter(str.isdigit, review_tag.get_text(strip=True)))
-
-            if digits:
-                reviews = int(digits)
-
-    # ---------------------------------------------------
-    # Important Rule:
-    # If no reviews exist, rating should be treated as missing
-    # ---------------------------------------------------
-    if reviews == 0:
-        rating = None
-
-    return rating, reviews
-
-# ---------------------------------------------------
-# Fetch Single ASIN
-# ---------------------------------------------------
-def fetch_amazon(asin):
-    url = f"https://www.amazon.in/dp/{asin}"
-
-    for attempt in range(3):
-
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept-Language": random.choice(ACCEPT_LANGUAGES),
-            "Referer": random.choice(REFERERS),
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache"
+            if (match) {
+                rating = parseFloat(match[1]);
+                break;
+            }
         }
 
+        if (rating !== null) break;
+    }
+
+    // --------------------------------------------------
+    // REVIEWS
+    // --------------------------------------------------
+
+    const reviewSelectors = [
+        '#acrCustomerReviewText',
+        'span[data-hook="total-review-count"]'
+    ];
+
+    for (const selector of reviewSelectors) {
+        const node = document.querySelector(selector);
+
+        if (node) {
+            const text = node.innerText.trim();
+            const match = text.match(/([\d,]+)/);
+
+            if (match) {
+                reviews = parseInt(match[1].replace(/,/g, ''));
+                break;
+            }
+        }
+    }
+
+    return {
+        rating,
+        reviews
+    };
+}
+"""
+
+# --------------------------------------------------
+# SCRAPE SINGLE ASIN
+# --------------------------------------------------
+async def scrape_asin(browser, asin):
+
+    url = f"https://www.amazon.in/dp/{asin}"
+
+    for attempt in range(MAX_RETRIES + 1):
+        page = None
+
         try:
-            response = session.get(
-                url,
-                headers=headers,
-                timeout=6
+            context = await browser.new_context(
+                user_agent=random.choice(USER_AGENTS),
+                locale="en-IN",
+                extra_http_headers=HEADERS,
+                viewport={"width": 1400, "height": 1000}
             )
 
-            if response.status_code != 200:
-                time.sleep(0.5)
-                continue
+            page = await context.new_page()
 
-            html = response.text
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=NAV_TIMEOUT
+            )
 
-            if is_blocked(html):
-                time.sleep(random.uniform(0.5, 1.0))
-                continue
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(random.randint(1200, 2200))
 
-            rating, reviews = extract_data(html)
+            # Small scroll helps load review section
+            await page.mouse.wheel(0, 1200)
+            await page.wait_for_timeout(700)
 
-            # Only return real product review data
-            if rating is not None and reviews > 0:
+            html = await page.content()
+            lower_html = html.lower()
+
+            if (
+                "captcha" in lower_html or
+                "robot check" in lower_html or
+                "enter the characters you see below" in lower_html
+            ):
+                raise Exception("Amazon blocked request")
+
+            data = await page.evaluate(AMAZON_JS_EXTRACTOR)
+
+            rating = data.get("rating")
+            reviews = data.get("reviews", 0)
+
+            if rating is not None:
+                await context.close()
+
                 return {
                     "asin": asin,
                     "rating": rating,
                     "reviews": reviews
                 }
 
-            # Product exists but no reviews / no rating
-            return {
-                "asin": asin,
-                "rating": None,
-                "reviews": 0
-            }
+            await context.close()
 
         except Exception:
-            pass
+            if page:
+                try:
+                    await page.close()
+                except:
+                    pass
 
-        time.sleep(random.uniform(0.5, 1.0))
+        await asyncio.sleep(random.uniform(0.8, 1.5))
 
     return {
         "asin": asin,
-        "rating": None,
+        "rating": 0,
         "reviews": 0
     }
 
-# ---------------------------------------------------
-# Batch Endpoint
-# ---------------------------------------------------
+# --------------------------------------------------
+# WORKER
+# --------------------------------------------------
+async def worker(browser, queue, results):
+
+    while True:
+        asin = await queue.get()
+
+        if asin is None:
+            queue.task_done()
+            break
+
+        result = await scrape_asin(browser, asin)
+        results.append(result)
+
+        queue.task_done()
+
+# --------------------------------------------------
+# BATCH ENDPOINT
+# --------------------------------------------------
 @app.get("/batch_amazon")
-def batch_amazon(asins: str):
+async def batch_amazon(asins: str):
 
     asin_list = [a.strip() for a in asins.split(",") if a.strip()]
+
+    if not asin_list:
+        return []
+
+    queue = asyncio.Queue()
     results = []
 
     for asin in asin_list:
-        try:
-            result = fetch_amazon(asin)
-            results.append(result)
+        await queue.put(asin)
 
-            # Small pause to reduce blocking
-            time.sleep(random.uniform(0.3, 0.8))
+    async with async_playwright() as pw:
 
-        except Exception:
-            results.append({
-                "asin": asin,
-                "rating": None,
-                "reviews": 0
-            })
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox"
+            ]
+        )
 
-    return results
+        workers = [
+            asyncio.create_task(worker(browser, queue, results))
+            for _ in range(min(MAX_WORKERS, len(asin_list)))
+        ]
+
+        await queue.join()
+
+        for _ in workers:
+            await queue.put(None)
+
+        await asyncio.gather(*workers)
+
+        await browser.close()
+
+    result_map = {item["asin"]: item for item in results}
+
+    ordered_results = []
+    for asin in asin_list:
+        ordered_results.append(
+            result_map.get(
+                asin,
+                {
+                    "asin": asin,
+                    "rating": 0,
+                    "reviews": 0
+                }
+            )
+        )
+
+    return ordered_results
