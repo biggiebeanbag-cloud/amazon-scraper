@@ -84,13 +84,233 @@ async def scrape_asin(browser, asin: str):
             ):
                 raise Exception("Amazon block detected")
 
-            result = await page.evaluate(
-                """
-                () => {
-                    let rating = null;
-                    let reviews = 0;
+            result = await page.evaluate("""
+() => {
+    let rating = null;
+    let reviews = 0;
 
-                    const ratingCandidates = [];
+    const ratingCandidates = [];
 
-                    const acrPopover = document.querySelector('#acrPopover');
-        return JSONResponse(fallback)
+    const acrPopover = document.querySelector('#acrPopover');
+    if (acrPopover) {
+        ratingCandidates.push(acrPopover.getAttribute('title') || '');
+    }
+
+    const hookRating = document.querySelector("span[data-hook='rating-out-of-text']");
+    if (hookRating) {
+        ratingCandidates.push(hookRating.innerText || '');
+    }
+
+    const iconAlt = document.querySelector('.a-icon-alt');
+    if (iconAlt) {
+        ratingCandidates.push(iconAlt.innerText || '');
+    }
+
+    for (const text of ratingCandidates) {
+        const match = text.match(/([0-5](?:\\.[0-9])?)\s*out\s*of\s*5/i);
+
+        if (match) {
+            const parsed = parseFloat(match[1]);
+
+            if (!isNaN(parsed) && parsed > 0 && parsed <= 5) {
+                rating = parsed;
+                break;
+            }
+        }
+    }
+
+    const reviewCandidates = [];
+
+    const reviewText = document.querySelector('#acrCustomerReviewText');
+    if (reviewText) {
+        reviewCandidates.push(reviewText.innerText || '');
+    }
+
+    const reviewHook = document.querySelector("span[data-hook='total-review-count']");
+    if (reviewHook) {
+        reviewCandidates.push(reviewHook.innerText || '');
+    }
+
+    for (const text of reviewCandidates) {
+        const match = text.match(/[\\d,]+/);
+
+        if (match) {
+            const parsed = parseInt(match[0].replace(/,/g, ''));
+
+            if (!isNaN(parsed)) {
+                reviews = parsed;
+                break;
+            }
+        }
+    }
+
+    return {
+        rating: rating,
+        reviews: reviews
+    };
+}
+""")
+
+            rating = result.get("rating")
+            reviews = result.get("reviews", 0)
+
+            if rating is None:
+                rating = 0
+
+            if reviews is None:
+                reviews = 0
+
+            try:
+                await page.close()
+            except:
+                pass
+
+            try:
+                await context.close()
+            except:
+                pass
+
+            return {
+                "asin": asin,
+                "rating": rating,
+                "reviews": reviews
+            }
+
+        except Exception as e:
+            print(f"ERROR for {asin} attempt {attempt}: {str(e)}")
+
+            try:
+                if page:
+                    await page.close()
+            except:
+                pass
+
+            try:
+                if context:
+                    await context.close()
+            except:
+                pass
+
+            if attempt < MAX_RETRIES + 1:
+                await asyncio.sleep(random.uniform(1, 2))
+
+    return {
+        "asin": asin,
+        "rating": 0,
+        "reviews": 0
+    }
+
+# ==================================================
+# WORKER
+# ==================================================
+async def worker(browser, queue, results):
+
+    while True:
+        asin = await queue.get()
+
+        if asin is None:
+            queue.task_done()
+            break
+
+        try:
+            result = await scrape_asin(browser, asin)
+        except Exception as e:
+            print(f"WORKER FAILURE for {asin}: {str(e)}")
+
+            result = {
+                "asin": asin,
+                "rating": 0,
+                "reviews": 0
+            }
+
+        results.append(result)
+        queue.task_done()
+
+# ==================================================
+# BATCH ENDPOINT
+# ==================================================
+@app.get("/batch_amazon")
+async def batch_amazon(asins: str):
+
+    try:
+        asin_list = [x.strip() for x in asins.split(",") if x.strip()]
+
+        if not asin_list:
+            return JSONResponse(content=[])
+
+        queue = asyncio.Queue()
+        results = []
+
+        for asin in asin_list:
+            await queue.put(asin)
+
+        async with async_playwright() as pw:
+
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-setuid-sandbox",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--single-process"
+                ]
+            )
+
+            workers = [
+                asyncio.create_task(worker(browser, queue, results))
+                for _ in range(min(MAX_CONCURRENT_PAGES, len(asin_list)))
+            ]
+
+            await queue.join()
+
+            for _ in workers:
+                await queue.put(None)
+
+            await asyncio.gather(*workers)
+
+            try:
+                await browser.close()
+            except:
+                pass
+
+        result_map = {
+            item["asin"]: item
+            for item in results
+        }
+
+        ordered_results = []
+
+        for asin in asin_list:
+            ordered_results.append(
+                result_map.get(
+                    asin,
+                    {
+                        "asin": asin,
+                        "rating": 0,
+                        "reviews": 0
+                    }
+                )
+            )
+
+        return JSONResponse(content=ordered_results)
+
+    except Exception as e:
+        print(f"BATCH ERROR: {str(e)}")
+
+        fallback = []
+
+        for asin in asins.split(","):
+            asin = asin.strip()
+
+            if asin:
+                fallback.append({
+                    "asin": asin,
+                    "rating": 0,
+                    "reviews": 0
+                })
+
+        return JSONResponse(content=fallback)
