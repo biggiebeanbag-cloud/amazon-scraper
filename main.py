@@ -58,61 +58,77 @@ def is_blocked(html):
     )
 
 # ---------------------------------------------------
-# Extract Rating + Reviews
+# Extract Rating + Reviews Strictly
 # ---------------------------------------------------
 def extract_data(html):
     soup = BeautifulSoup(html, "html.parser")
 
-    rating = 0
+    rating = None
     reviews = 0
 
+    # ---------------------------------------------------
     # Main Rating Selector
+    # ---------------------------------------------------
     rating_tag = soup.select_one("#acrPopover")
+
     if rating_tag:
-        title = rating_tag.get("title", "")
-        if "out of" in title:
-            try:
-                rating = float(title.split(" ")[0].replace(",", "."))
-            except:
-                pass
+        title = rating_tag.get("title", "").strip()
 
-    # Fallback Rating Selector 1
-    if rating == 0:
-        rating_tag = soup.select_one("span[data-hook='rating-out-of-text']")
-        if rating_tag:
+        if "out of" in title.lower():
             try:
-                rating = float(rating_tag.text.split(" ")[0].replace(",", "."))
-            except:
-                pass
-
-    # Fallback Rating Selector 2
-    if rating == 0:
-        possible_ratings = soup.select("span.a-size-base.a-color-base")
-        for tag in possible_ratings:
-            text = tag.text.strip().replace(",", ".")
-            try:
-                value = float(text)
+                value = float(title.split(" ")[0].replace(",", "."))
                 if 0 < value <= 5:
                     rating = value
-                    break
             except:
                 pass
 
-    # Main Reviews Selector
-    review_tag = soup.select_one("#acrCustomerReviewText")
-    if review_tag:
-        text = review_tag.text.strip()
-        num = ''.join(filter(str.isdigit, text))
-        if num:
-            reviews = int(num)
+    # ---------------------------------------------------
+    # Fallback Rating Selector
+    # ---------------------------------------------------
+    if rating is None:
+        rating_tag = soup.select_one("span[data-hook='rating-out-of-text']")
 
-    # Fallback Reviews Selector
+        if rating_tag:
+            text = rating_tag.get_text(strip=True)
+
+            if "out of" in text.lower():
+                try:
+                    value = float(text.split(" ")[0].replace(",", "."))
+                    if 0 < value <= 5:
+                        rating = value
+                except:
+                    pass
+
+    # ---------------------------------------------------
+    # Main Review Selector
+    # ---------------------------------------------------
+    review_tag = soup.select_one("#acrCustomerReviewText")
+
+    if review_tag:
+        text = review_tag.get_text(strip=True)
+        digits = ''.join(filter(str.isdigit, text))
+
+        if digits:
+            reviews = int(digits)
+
+    # ---------------------------------------------------
+    # Fallback Review Selector
+    # ---------------------------------------------------
     if reviews == 0:
         review_tag = soup.select_one("span[data-hook='total-review-count']")
+
         if review_tag:
-            num = ''.join(filter(str.isdigit, review_tag.text))
-            if num:
-                reviews = int(num)
+            digits = ''.join(filter(str.isdigit, review_tag.get_text(strip=True)))
+
+            if digits:
+                reviews = int(digits)
+
+    # ---------------------------------------------------
+    # Important Rule:
+    # If no reviews exist, rating should be treated as missing
+    # ---------------------------------------------------
+    if reviews == 0:
+        rating = None
 
     return rating, reviews
 
@@ -153,12 +169,20 @@ def fetch_amazon(asin):
 
             rating, reviews = extract_data(html)
 
-            if rating > 0:
+            # Only return real product review data
+            if rating is not None and reviews > 0:
                 return {
                     "asin": asin,
                     "rating": rating,
                     "reviews": reviews
                 }
+
+            # Product exists but no reviews / no rating
+            return {
+                "asin": asin,
+                "rating": None,
+                "reviews": 0
+            }
 
         except Exception:
             pass
@@ -167,12 +191,12 @@ def fetch_amazon(asin):
 
     return {
         "asin": asin,
-        "rating": 0,
+        "rating": None,
         "reviews": 0
     }
 
 # ---------------------------------------------------
-# Batch Endpoint (Sequential One By One)
+# Batch Endpoint
 # ---------------------------------------------------
 @app.get("/batch_amazon")
 def batch_amazon(asins: str):
@@ -185,13 +209,13 @@ def batch_amazon(asins: str):
             result = fetch_amazon(asin)
             results.append(result)
 
-            # Small pause between ASINs to reduce Amazon blocking
+            # Small pause to reduce blocking
             time.sleep(random.uniform(0.3, 0.8))
 
         except Exception:
             results.append({
                 "asin": asin,
-                "rating": 0,
+                "rating": None,
                 "reviews": 0
             })
 
