@@ -110,7 +110,7 @@ def fetch_amazon(asin):
 
         # Stop after 15 seconds total
         elapsed = time.time() - start_time
-        if elapsed >= 15:
+        if elapsed >= 60:
             break
 
         headers = {
@@ -133,7 +133,7 @@ def fetch_amazon(asin):
             response = requests.get(
                 url,
                 headers=headers,
-                timeout=8
+                timeout=30
             )
 
             html = response.text
