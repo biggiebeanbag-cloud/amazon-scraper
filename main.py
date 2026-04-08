@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 import requests
 import random
+import time
 from bs4 import BeautifulSoup
 
 app = FastAPI()
@@ -9,6 +10,7 @@ app = FastAPI()
 def health():
     return {"status": "ok"}
 
+# 🔥 FULL USER AGENTS
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121 Safari/537.36",
@@ -19,9 +21,9 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 Version/15.0 Mobile Safari/604.1"
 ]
 
+# 🔥 BLOCK DETECTION
 def is_blocked(html):
     text = html.lower()
-
     return (
         "captcha" in text or
         "robot check" in text or
@@ -30,184 +32,189 @@ def is_blocked(html):
         len(html) < 3000
     )
 
+# 🔥 TITLE + PRICE CHECK
+def extract_title_price(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = ""
+    price = ""
+
+    # Title selectors
+    title_selectors = [
+        "#productTitle",
+        "span#productTitle",
+        "#title"
+    ]
+
+    for selector in title_selectors:
+        tag = soup.select_one(selector)
+        if tag:
+            title = tag.get_text(strip=True)
+            if title:
+                break
+
+    # Price selectors
+    price_selectors = [
+        ".a-price .a-offscreen",
+        ".reinventPricePriceToPayMargin span.a-offscreen",
+        "span.a-price-whole",
+        ".a-price-whole"
+    ]
+
+    for selector in price_selectors:
+        tag = soup.select_one(selector)
+        if tag:
+            price = tag.get_text(strip=True)
+            if price:
+                break
+
+    return title, price
+
+# 🔥 STRICT EXTRACTION
 def extract_data(html):
     soup = BeautifulSoup(html, "html.parser")
 
     rating = 0
     reviews = 0
-    title = ""
-    price = ""
 
-    # Product title
-    title_selectors = [
-        "#productTitle",
-        "#title",
-        "span#productTitle"
-    ]
-
-    for selector in title_selectors:
-        title_tag = soup.select_one(selector)
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-            if title:
-                break
-
-    # Selling price
-    price_selectors = [
-        ".a-price-whole",
-        "span.a-price-whole",
-        ".reinventPricePriceToPayMargin span.a-offscreen",
-        ".a-price .a-offscreen"
-    ]
-
-    for selector in price_selectors:
-        price_tag = soup.select_one(selector)
-        if price_tag:
-            price = price_tag.get_text(strip=True)
-            if price:
-                break
-
-    # Rating
+    # Original rating logic only
     rating_tag = soup.select_one("#acrPopover")
     if rating_tag:
-        title_attr = rating_tag.get("title", "")
-        if "out of" in title_attr:
+        title = rating_tag.get("title", "")
+        if "out of" in title:
             try:
-                rating = float(title_attr.split(" ")[0])
+                rating = float(title.split(" ")[0])
             except:
                 pass
 
-    if rating == 0:
-        alt_rating_selectors = [
-            "span[data-hook='rating-out-of-text']",
-            ".a-icon-alt"
-        ]
-
-        for selector in alt_rating_selectors:
-            alt_rating = soup.select_one(selector)
-            if alt_rating:
-                text = alt_rating.get_text(strip=True)
-                if "out of" in text:
-                    try:
-                        rating = float(text.split(" ")[0])
-                        break
-                    except:
-                        pass
-
-    # Reviews
+    # Original review logic only
     review_tag = soup.select_one("#acrCustomerReviewText")
     if review_tag:
-        text = review_tag.get_text(strip=True)
+        text = review_tag.text.strip()
         num = ''.join(filter(str.isdigit, text))
         if num:
             reviews = int(num)
 
-    if reviews == 0:
-        alt_review_selectors = [
-            "span[data-hook='total-review-count']",
-            "#reviews-medley-footer .a-link-normal"
-        ]
+    return rating, reviews
 
-        for selector in alt_review_selectors:
-            alt_review = soup.select_one(selector)
-            if alt_review:
-                text = alt_review.get_text(strip=True)
-                num = ''.join(filter(str.isdigit, text))
-                if num:
-                    reviews = int(num)
-                    break
-
-    return {
-        "rating": rating,
-        "reviews": reviews,
-        "title": title,
-        "price": price
-    }
-
+# 🔥 MAIN FETCH LOGIC (5 ATTEMPTS, MAX 15 SECONDS)
 def fetch_amazon(asin):
     url = f"https://www.amazon.in/dp/{asin}"
 
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": random.choice([
-            "en-IN,en;q=0.9",
-            "en-US,en;q=0.9",
-            "en-GB,en;q=0.9"
-        ]),
-        "Referer": random.choice([
-            "https://www.amazon.in/",
-            "https://www.google.com/",
-            "https://www.bing.com/"
-        ]),
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+    start_time = time.time()
+
+    last_title = ""
+    last_price = ""
+
+    for attempt in range(5):
+
+        # Stop after 15 seconds total
+        elapsed = time.time() - start_time
+        if elapsed >= 15:
+            break
+
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept-Language": random.choice([
+                "en-IN,en;q=0.9",
+                "en-US,en;q=0.9",
+                "en-GB,en;q=0.9"
+            ]),
+            "Referer": random.choice([
+                "https://www.amazon.in/",
+                "https://www.google.com/",
+                "https://www.bing.com/"
+            ]),
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        }
+
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=8
+            )
+
+            html = response.text
+
+            # 🚨 BLOCK CHECK
+            if is_blocked(html):
+                time.sleep(random.uniform(1, 2))
+                continue
+
+            rating, reviews = extract_data(html)
+            title, price = extract_title_price(html)
+
+            if title:
+                last_title = title
+
+            if price:
+                last_price = price
+
+            # ✅ SUCCESS IF RATING FOUND
+            if rating > 0:
+                return {
+                    "asin": asin,
+                    "rating": rating,
+                    "reviews": reviews,
+                    "title": last_title,
+                    "price": last_price
+                }
+
+        except:
+            pass
+
+        # ⏳ SMALL RANDOM DELAY
+        time.sleep(random.uniform(0.5, 1.5))
+
+    # Final fallback:
+    # If title + price were visible during retries,
+    # accept rating/reviews as 0
+    if last_title and last_price:
+        return {
+            "asin": asin,
+            "rating": 0,
+            "reviews": 0,
+            "title": last_title,
+            "price": last_price
+        }
+
+    # ❌ FAIL
+    return {
+        "asin": asin,
+        "rating": 0,
+        "reviews": 0,
+        "title": "",
+        "price": ""
     }
 
-    try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=8
-        )
-
-        html = response.text
-
-        if is_blocked(html):
-            return {
-                "asin": asin,
-                "rating": 0,
-                "reviews": 0,
-                "title": "",
-                "price": "",
-                "status": "blocked"
-            }
-
-        extracted = extract_data(html)
-
-        title = extracted["title"]
-        price = extracted["price"]
-        rating = extracted["rating"]
-        reviews = extracted["reviews"]
-
-        # If title and price exist, page is valid even if rating/reviews are 0
-        if title and price:
-            return {
-                "asin": asin,
-                "rating": rating,
-                "reviews": reviews,
-                "title": title,
-                "price": price,
-                "status": "success"
-            }
-
-        # If page is incomplete
-        return {
-            "asin": asin,
-            "rating": 0,
-            "reviews": 0,
-            "title": title,
-            "price": price,
-            "status": "partial"
-        }
-
-    except Exception as e:
-        return {
-            "asin": asin,
-            "rating": 0,
-            "reviews": 0,
-            "title": "",
-            "price": "",
-            "status": "error",
-            "error": str(e)
-        }
-
+# 🚀 API ENDPOINT
 @app.get("/batch_amazon")
 def batch_amazon(asins: str):
 
-    asin_list = [a.strip() for a in asins.split(",") if a.strip()]
+    asin_list = asins.split(",")
     results = []
 
     for asin in asin_list:
-        results.append(fetch_amazon(asin))
+
+        asin = asin.strip()
+
+        if not asin:
+            continue
+
+        data = fetch_amazon(asin)
+
+        # 🔁 SECOND LAYER RETRY ONLY IF NOTHING WAS FOUND
+        if (
+            data["rating"] == 0 and
+            data["reviews"] == 0 and
+            not data["title"] and
+            not data["price"]
+        ):
+            time.sleep(1)
+            data = fetch_amazon(asin)
+
+        results.append(data)
 
     return results
